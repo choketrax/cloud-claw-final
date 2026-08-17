@@ -88,7 +88,7 @@ else
 fi
 
 if [ ! -f "$OPENCLAW_STATE_DIR/openclaw.json" ]; then
-	cat > "$OPENCLAW_STATE_DIR/openclaw.json" << 'EOFCONFIG'
+	cat > "$OPENCLAW_STATE_DIR/openclaw.json" << EOFCONFIG
 {
   "gateway": {
     "mode": "local",
