@@ -16,13 +16,11 @@ RUN set -eux; \
 		fuse \
 		ca-certificates \
 		curl \
-        python3; \
+        nodejs; \
 	curl -fsSL "https://github.com/tigrisdata/tigrisfs/releases/download/v${TIGRISFS_VERSION}/tigrisfs_${TIGRISFS_VERSION}_linux_amd64.deb" -o /tmp/tigrisfs.deb; \
 	dpkg -i /tmp/tigrisfs.deb; \
 	rm -f /tmp/tigrisfs.deb; \
 	rm -rf /var/lib/apt/lists/* /var/cache/apt/archives/*
-
-# openclaw CLI is already on PATH in the official slim image — no COPY or shim needed.
 
 RUN install -m 755 /dev/stdin /entrypoint.sh <<'EOF'
 #!/bin/bash
@@ -92,7 +90,7 @@ if [ ! -f "$OPENCLAW_STATE_DIR/openclaw.json" ]; then
   "gateway": {
     "mode": "local",
     "bind": "lan",
-    "port": 6658,
+    "port": 6659,
     "auth": {
       "mode": "token"
     },
@@ -117,51 +115,53 @@ if [ ! -f "$OPENCLAW_STATE_DIR/openclaw.json" ]; then
   }
 }
 EOFCONFIG
-	echo "[INFO] Default config file created (local mode + allowInsecureAuth)"
+	echo "[INFO] Default config file created"
 fi
 
 echo "[INFO] Starting OpenClaw Gateway..."
-echo "[INFO] Visit Web UI for initial setup on first use"
 cd "$OPENCLAW_WORKSPACE_DIR"
 
 if command -v openclaw >/dev/null 2>&1; then
-    echo "[INFO] Using global openclaw binary"
-    openclaw gateway --port 6658 --allow-unconfigured > /tmp/crash.log 2>&1 &
+    openclaw gateway --port 6659 --allow-unconfigured &
 elif npx --no-install openclaw --version >/dev/null 2>&1; then
-    echo "[INFO] Using npx openclaw"
-    npx --no-install openclaw gateway --port 6658 --allow-unconfigured > /tmp/crash.log 2>&1 &
+    npx --no-install openclaw gateway --port 6659 --allow-unconfigured &
 elif [ -f "/app/openclaw.mjs" ]; then
-    echo "[INFO] Using /app/openclaw.mjs"
-    node /app/openclaw.mjs gateway --port 6658 --allow-unconfigured > /tmp/crash.log 2>&1 &
+    node /app/openclaw.mjs gateway --port 6659 --allow-unconfigured &
 elif [ -f "/usr/src/app/openclaw.mjs" ]; then
-    echo "[INFO] Using /usr/src/app/openclaw.mjs"
-    node /usr/src/app/openclaw.mjs gateway --port 6658 --allow-unconfigured > /tmp/crash.log 2>&1 &
+    node /usr/src/app/openclaw.mjs gateway --port 6659 --allow-unconfigured &
 else
-    echo "[WARN] Could not find openclaw via standard paths, searching..."
     FOUND=$(find / -maxdepth 4 -name "openclaw.mjs" 2>/dev/null | head -n 1)
     if [ -n "$FOUND" ]; then
-        echo "[INFO] Found openclaw.mjs at $FOUND"
-        node "$FOUND" gateway --port 6658 --allow-unconfigured > /tmp/crash.log 2>&1 &
+        node "$FOUND" gateway --port 6659 --allow-unconfigured &
     else
-        echo "[FATAL] openclaw not found!" > /tmp/crash.log
+        echo "[FATAL] openclaw not found!"
+        exit 1
     fi
 fi
 
 OPENCLAW_PID=$!
-wait $OPENCLAW_PID || echo "[WARN] OpenClaw exited with code $?"
 
-# disable exit-on-error so the container physically cannot die
-set +e 
-echo "Serving crash log on port 6658..."
-cd /tmp
-python3 -m http.server 6658
-sleep 36000
+cat > /tmp/proxy.js << 'NODEPROXY'
+const net = require('net');
+const server = net.createServer((socket) => {
+  const client = net.connect(6659, '127.0.0.1');
+  socket.pipe(client);
+  client.pipe(socket);
+  socket.on('error', () => {});
+  client.on('error', () => {});
+});
+server.listen(6658, () => console.log('Proxy listening on 6658, forwarding to 6659'));
+NODEPROXY
+
+node /tmp/proxy.js &
+
+wait $OPENCLAW_PID || echo "[WARN] OpenClaw exited with code $?"
+sleep 60
 EOF
 
 EXPOSE 6658
 
-# If the python server is running, the healthcheck will pass so Cloudflare connects to it
 HEALTHCHECK --interval=30s --timeout=10s --start-period=60s --retries=3 \
-	CMD curl -f http://localhost:6658/ || exit 1
+	CMD curl -f http://localhost:6658/health || exit 1
 
 ENTRYPOINT ["/entrypoint.sh"]
