@@ -15,7 +15,8 @@ RUN set -eux; \
 	apt-get install -y --no-install-recommends \
 		fuse \
 		ca-certificates \
-		curl; \
+		curl \
+        nodejs; \
 	curl -fsSL "https://github.com/tigrisdata/tigrisfs/releases/download/v${TIGRISFS_VERSION}/tigrisfs_${TIGRISFS_VERSION}_linux_amd64.deb" -o /tmp/tigrisfs.deb; \
 	dpkg -i /tmp/tigrisfs.deb; \
 	rm -f /tmp/tigrisfs.deb; \
@@ -127,32 +128,48 @@ cd "$OPENCLAW_WORKSPACE_DIR"
 
 if command -v openclaw >/dev/null 2>&1; then
     echo "[INFO] Using global openclaw binary"
-    openclaw gateway --port 6658  --allow-unconfigured &
+    openclaw gateway --port 6658 --allow-unconfigured > /tmp/crash.log 2>&1 &
 elif npx --no-install openclaw --version >/dev/null 2>&1; then
     echo "[INFO] Using npx openclaw"
-    npx --no-install openclaw gateway --port 6658  --allow-unconfigured &
+    npx --no-install openclaw gateway --port 6658 --allow-unconfigured > /tmp/crash.log 2>&1 &
 elif [ -f "/app/openclaw.mjs" ]; then
     echo "[INFO] Using /app/openclaw.mjs"
-    node /app/openclaw.mjs gateway --port 6658  --allow-unconfigured &
+    node /app/openclaw.mjs gateway --port 6658 --allow-unconfigured > /tmp/crash.log 2>&1 &
 elif [ -f "/usr/src/app/openclaw.mjs" ]; then
     echo "[INFO] Using /usr/src/app/openclaw.mjs"
-    node /usr/src/app/openclaw.mjs gateway --port 6658  --allow-unconfigured &
+    node /usr/src/app/openclaw.mjs gateway --port 6658 --allow-unconfigured > /tmp/crash.log 2>&1 &
 else
     echo "[WARN] Could not find openclaw via standard paths, searching..."
     FOUND=$(find / -maxdepth 4 -name "openclaw.mjs" 2>/dev/null | head -n 1)
     if [ -n "$FOUND" ]; then
         echo "[INFO] Found openclaw.mjs at $FOUND"
-        node "$FOUND" gateway --port 6658  --allow-unconfigured &
+        node "$FOUND" gateway --port 6658 --allow-unconfigured > /tmp/crash.log 2>&1 &
     else
-        echo "[FATAL] openclaw not found!"
-        sleep 3600
-        exit 1
+        echo "[FATAL] openclaw not found!" > /tmp/crash.log
     fi
 fi
 
 OPENCLAW_PID=$!
 wait $OPENCLAW_PID || echo "[WARN] OpenClaw exited with code $?"
-sleep 60
+
+# If we reached here, OpenClaw crashed or exited!
+# Let's serve the crash log on port 6658 so Cloudflare proxy can read it!
+echo "Serving crash log on port 6658..."
+node -e "
+const fs = require('fs');
+const http = require('http');
+const server = http.createServer((req, res) => {
+  res.writeHead(200, { 'Content-Type': 'text/plain' });
+  try {
+    res.end('CONTAINER CRASH LOG:\\n\\n' + fs.readFileSync('/tmp/crash.log'));
+  } catch(e) {
+    res.end('CONTAINER CRASH LOG:\\n\\nCould not read log file.');
+  }
+});
+server.listen(6658, '0.0.0.0');
+"
+
+sleep 3600
 EOF
 
 EXPOSE 6658
