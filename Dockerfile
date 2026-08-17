@@ -16,7 +16,7 @@ RUN set -eux; \
 		fuse \
 		ca-certificates \
 		curl \
-        nodejs; \
+        python3; \
 	curl -fsSL "https://github.com/tigrisdata/tigrisfs/releases/download/v${TIGRISFS_VERSION}/tigrisfs_${TIGRISFS_VERSION}_linux_amd64.deb" -o /tmp/tigrisfs.deb; \
 	dpkg -i /tmp/tigrisfs.deb; \
 	rm -f /tmp/tigrisfs.deb; \
@@ -30,8 +30,6 @@ set -e
 
 MOUNT_POINT="/data"
 
-# State directory corresponds to ~/.openclaw (contains config, credentials, sessions)
-# Workspace defaults to $OPENCLAW_STATE_DIR/workspace per docs
 export OPENCLAW_STATE_DIR="$MOUNT_POINT"
 export OPENCLAW_WORKSPACE_DIR="$MOUNT_POINT/workspace"
 
@@ -152,29 +150,18 @@ fi
 OPENCLAW_PID=$!
 wait $OPENCLAW_PID || echo "[WARN] OpenClaw exited with code $?"
 
-# If we reached here, OpenClaw crashed or exited!
-# Let's serve the crash log on port 6658 so Cloudflare proxy can read it!
+# disable exit-on-error so the container physically cannot die
+set +e 
 echo "Serving crash log on port 6658..."
-node -e "
-const fs = require('fs');
-const http = require('http');
-const server = http.createServer((req, res) => {
-  res.writeHead(200, { 'Content-Type': 'text/plain' });
-  try {
-    res.end('CONTAINER CRASH LOG:\\n\\n' + fs.readFileSync('/tmp/crash.log'));
-  } catch(e) {
-    res.end('CONTAINER CRASH LOG:\\n\\nCould not read log file.');
-  }
-});
-server.listen(6658, '0.0.0.0');
-"
-
-sleep 3600
+cd /tmp
+python3 -m http.server 6658
+sleep 36000
 EOF
 
 EXPOSE 6658
 
+# If the python server is running, the healthcheck will pass so Cloudflare connects to it
 HEALTHCHECK --interval=30s --timeout=10s --start-period=60s --retries=3 \
-	CMD curl -f http://localhost:6658/health || exit 1
+	CMD curl -f http://localhost:6658/ || exit 1
 
 ENTRYPOINT ["/entrypoint.sh"]
